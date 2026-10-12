@@ -1,0 +1,6 @@
+@FireSquad.Api_HostAddress = http://localhost:5082
+
+GET {{FireSquad.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

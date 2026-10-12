@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="FireSquad.Api/FireSquad.Api.csproj" />
+  <Project Path="FireSquad.Lobby/FireSquad.Lobby.csproj" />
+  <Project Path="FireSquad.Shared/FireSquad.Shared.csproj" />
+</Solution>
