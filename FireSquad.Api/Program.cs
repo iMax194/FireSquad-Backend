@@ -1,83 +1,116 @@
-
+using System.Text;
+using FireSquad.Api.Settings;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
 using FireSquad.Api.Data;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using FireSquad.Api.Repositories;
+using FireSquad.Api.Repositories.Interfaces;
+using FireSquad.Api.Services;
+using FireSquad.Api.Services.Interfaces;
+using FireSquad.Api.Models;
+using Microsoft.AspNetCore.Identity;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Controllers
+builder.Services.AddControllers();
+
+// Swagger
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.AddSecurityDefinition(
+        "Bearer",
+        new OpenApiSecurityScheme
+        {
+            Name = "Authorization",
+            Type = SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT",
+            In = ParameterLocation.Header,
+            Description = "Enter your JWT access token."
+        });
+
+    options.AddSecurityRequirement(document =>
+        new OpenApiSecurityRequirement
+        {
+            [new OpenApiSecuritySchemeReference(
+                "Bearer", document)] = []
+        });
+});
+
+// Mongo
 builder.Services.AddSingleton<MongoDbContext>();
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IPasswordHasher<User>,PasswordHasher<User>>();
+
+// JWT
+builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
+builder.Services.AddScoped<JwtService>();
+
+var jwtKey = builder.Configuration["Jwt:Key"]
+    ?? throw new InvalidOperationException(
+        "JWT signing key is missing.");
+
+if (Encoding.UTF8.GetByteCount(jwtKey) < 32)
+{
+    throw new InvalidOperationException(
+        "JWT signing key must be at least 32 bytes.");
+}
+
+var jwtIssuer = builder.Configuration["Jwt:Issuer"]
+    ?? throw new InvalidOperationException(
+        "JWT issuer is missing.");
+
+var jwtAudience = builder.Configuration["Jwt:Audience"]
+    ?? throw new InvalidOperationException(
+        "JWT audience is missing.");
+
+builder.Services
+    .AddAuthentication(
+        JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;
+
+        options.TokenValidationParameters =
+            new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+
+                ValidIssuer = jwtIssuer,
+                ValidAudience = jwtAudience,
+
+                IssuerSigningKey =
+                    new SymmetricSecurityKey(
+                        Encoding.UTF8.GetBytes(jwtKey)),
+
+                NameClaimType = "unique_name",
+                ClockSkew = TimeSpan.Zero
+            };
+    });
+
+builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
-app.MapGet("/", () =>
-    Results.Ok(new
-    {
-        message = "FireSquad API is running!",
-        status = "OK"
-    }));
-
-// Test routes only available in Development.
+// Swagger UI
 if (app.Environment.IsDevelopment())
 {
-    app.MapGet("/api/test/mongodb", async (
-        MongoDbContext db) =>
-    {
-        try
-        {
-            await db.Database.RunCommandAsync<BsonDocument>(
-                new BsonDocument("ping", 1));
-
-            return Results.Ok(new
-            {
-                message = "MongoDB connected successfully!"
-            });
-        }
-        catch (Exception)
-        {
-            return Results.Problem(
-                "MongoDB connection failed.",
-                statusCode: 503);
-        }
-    });
-
-    app.MapPost("/api/test/insert", async (
-    MongoDbContext db) =>
-    {
-        var document = new BsonDocument
-        {
-            { "project", "FireSquad" },
-            { "status", "Connected" },
-            { "createdAt", DateTime.UtcNow }
-        };
-
-        await db.ConnectionTests.InsertOneAsync(document);
-
-        return Results.Created(
-            "/api/test/data",
-            new
-            {
-                message = "Inserted successfully!"
-            });
-    });
-
-    app.MapGet("/api/test/data", async (
-    MongoDbContext db) =>
-    {
-        var documents = await db.ConnectionTests
-            .Find(FilterDefinition<BsonDocument>.Empty)
-            .ToListAsync();
-
-        var result = documents.Select(d => new
-        {
-            id = d["_id"].ToString(),
-            project = d.GetValue(
-                "project", BsonNull.Value).ToString(),
-            status = d.GetValue(
-                "status", BsonNull.Value).ToString()
-        }).ToList();
-
-        return Results.Ok(result);
-    });
+    app.UseSwagger();
+    app.UseSwaggerUI();
 }
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
 
 app.Run();

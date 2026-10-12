@@ -4,9 +4,14 @@ using MongoDB.Driver;
 
 namespace FireSquad.Api.Data;
 
+using FireSquad.Api.Models;
+
 public class MongoDbContext
 {
     private readonly IMongoDatabase _database;
+
+    public IMongoCollection<User> Users =>
+    _database.GetCollection<User>("users");
 
     public MongoDbContext(IConfiguration configuration)
     {
