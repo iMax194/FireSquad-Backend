@@ -1,0 +1,62 @@
+
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using FireSquad.Api.Models;
+using FireSquad.Api.Settings;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+
+namespace FireSquad.Api.Services;
+
+public class JwtService
+{
+    private readonly JwtSettings _settings;
+
+    public JwtService(IOptions<JwtSettings> options)
+    {
+        _settings = options.Value;
+    }
+
+    public (string Token, DateTime ExpiresAt)
+        GenerateToken(User user)
+    {
+        var claims = new List<Claim>
+        {
+            new Claim(
+                JwtRegisteredClaimNames.Sub,
+                user.Id!),
+
+            new Claim(
+                JwtRegisteredClaimNames.UniqueName,
+                user.Username),
+
+            new Claim(
+                JwtRegisteredClaimNames.Jti,
+                Guid.NewGuid().ToString())
+        };
+
+        var key = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(_settings.Key));
+
+        var credentials = new SigningCredentials(
+            key,
+            SecurityAlgorithms.HmacSha256);
+
+        var expiresAt = DateTime.UtcNow.AddMinutes(
+            _settings.ExpiryMinutes);
+
+        var token = new JwtSecurityToken(
+            issuer: _settings.Issuer,
+            audience: _settings.Audience,
+            claims: claims,
+            expires: expiresAt,
+            signingCredentials: credentials
+        );
+
+        var tokenString = new JwtSecurityTokenHandler()
+            .WriteToken(token);
+
+        return (tokenString, expiresAt);
+    }
+}
