@@ -1,0 +1,263 @@
+using System.Security.Cryptography;
+using FireSquad.Lobby.Models;
+
+namespace FireSquad.Lobby.Manager;
+
+public class LobbyManager
+{
+    private readonly Dictionary<string, LobbyRoom> _rooms = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly object _lock = new();
+
+    private const string RoomCharacters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    private static LobbyRoom Snapshot(LobbyRoom room)
+    {
+        return new LobbyRoom
+        {
+            RoomCode = room.RoomCode,
+            HostPlayerId = room.HostPlayerId,
+            MaxPlayers = room.MaxPlayers,
+            State = room.State,
+            CreatedAt = room.CreatedAt,
+            Players = room.Players.Select(p => new LobbyPlayer
+            {
+                PlayerId = p.PlayerId,
+                    Username = p.Username,
+                    Role = p.Role,
+                    IsReady = p.IsReady,
+                    IsHost = p.IsHost,
+                    JoinedAt = p.JoinedAt
+            }).ToList()
+        };
+    }
+
+    private static string GenerateRoomCode()
+    {
+        return new string(
+            Enumerable.Range(0,6).Select(
+                _ => RoomCharacters[
+                    RandomNumberGenerator.GetInt32(
+                        RoomCharacters.Length
+                    )
+                ]
+            ).ToArray()
+        );
+    }
+
+    public LobbyRoom CreateRoom(string playerId, string username)
+    {
+        lock (_lock)
+        {
+            if (IsPlayerInRoom(playerId))
+            {
+                throw new InvalidOperationException("Player is already in a room");
+            }
+
+            string code;
+
+            do
+            {
+                code = GenerateRoomCode();
+            } while (_rooms.ContainsKey(code));
+
+            var room = new LobbyRoom
+            {
+                RoomCode = code,
+                HostPlayerId = playerId  
+            };
+
+            room.Players.Add(new LobbyPlayer
+            {
+                PlayerId = playerId,
+                Username = username,
+                IsHost = true
+            });
+
+            _rooms.Add(code, room);
+
+            return Snapshot(room);
+        }
+    }
+
+    public LobbyRoom JoinRoom(string code, string playerId, string username)
+    {
+        lock (_lock)
+        {
+            if (IsPlayerInRoom(playerId))
+            {
+                throw new InvalidOperationException("Player is already in a room.");
+            }
+
+            if (!_rooms.TryGetValue(code, out var room))
+            {
+                throw new InvalidOperationException("Room not found.");
+            }
+
+            if (room.State != LobbyRoomState.Waiting)
+            {
+                throw new InvalidOperationException("Room is not accepting players.");
+            }
+
+            if (room.Players.Count > room.MaxPlayers)
+            {
+                throw new InvalidOperationException("Room is full.");
+            }
+
+            room.Players.Add(new LobbyPlayer
+            {
+                PlayerId = playerId,
+                Username = username
+            });
+
+            ResetReady(room);
+
+            return Snapshot(room);
+        }
+    }
+
+    public LobbyRoom SelectRole(string code, string playerId, PlayerRole role)
+    {
+        lock (_lock)
+        {
+            var room = GetWaitingRoom(code);
+            var player = GetPlayer(room, playerId);
+
+            if (!Enum.IsDefined(role))
+            {
+                throw new InvalidOperationException("Invalid role.");
+            }
+
+            if (room.Players.Any(p => p.PlayerId != playerId && p.Role == role))
+            {
+                throw new InvalidOperationException("Role is already taken.");
+            }
+
+            player.Role = role;
+            player.IsReady = false;
+
+            return Snapshot(room);
+        }
+    }
+
+    public LobbyRoom SetReady(string code, string playerId, bool ready)
+    {
+        lock (_lock)
+        {
+            var room = GetWaitingRoom(code);
+            var player = GetPlayer(room, playerId);
+
+            if (ready && player.Role == null)
+            {
+                throw new InvalidOperationException("Please select a role first.");
+            }
+
+            player.IsReady = true;
+
+            return Snapshot(room);
+        }
+    }
+
+    public bool CanStart(string code, string playerId)
+    {
+        lock (_lock)
+        {
+            if (!_rooms.TryGetValue(code, out var room)) return false;
+
+            return room.State == LobbyRoomState.Waiting
+                && room.HostPlayerId == playerId
+                && room.Players.Count == room.MaxPlayers
+                && room.Players.All(p => p.Role.HasValue && p.IsReady)
+                && room.Players.Select(p => p.Role).Distinct().Count() == room.MaxPlayers;
+        }
+    }
+
+    public LobbyRoom? LeaveRoom(string code, string playerId)
+    {
+        lock (_lock)
+        {
+            if (!_rooms.TryGetValue(code, out var room)) return null;
+
+            if (room.State != LobbyRoomState.Waiting)
+            {
+                throw new InvalidOperationException("Cannot leave using lobby rules after the game has started.");
+            }
+
+            var player = room.Players.FirstOrDefault(p => p.PlayerId == playerId);
+
+            if (player == null)
+            {
+                return Snapshot(room);
+            }
+
+            room.Players.Remove(player);
+
+            if (room.Players.Count == 0)
+            {
+                _rooms.Remove(code);
+                return null;
+            }
+
+            if (room.HostPlayerId == playerId)
+            {
+                var newHost = room.Players[0];
+                room.HostPlayerId = newHost.PlayerId;
+
+                foreach (var p in room.Players)
+                {
+                    p.IsHost = playerId == newHost.PlayerId;
+                }
+            }
+
+            ResetReady(room);
+
+            return Snapshot(room);
+        }
+    }
+
+    public LobbyRoom? GetRoom(string code)
+    {
+        lock (_lock)
+        {
+            return _rooms.TryGetValue(code, out var room)
+                ? Snapshot(room)
+                : null;
+        }
+    }
+
+    private bool IsPlayerInRoom(string playerId)
+    {
+        return _rooms.Values.Any(room =>
+            room.Players.Any(p =>
+                p.PlayerId == playerId));
+    }
+
+    private LobbyRoom GetWaitingRoom(string code)
+    {
+        if (!_rooms.TryGetValue(code, out var room))
+        {
+            throw new InvalidOperationException("Room not found.");
+        }
+
+        if (room.State != LobbyRoomState.Waiting)
+        {
+            throw new InvalidOperationException("Room is not in Waiting state.");
+        }
+
+        return room;
+    }
+
+    private static LobbyPlayer GetPlayer(LobbyRoom room, string playerId)
+    {
+        return room.Players.FirstOrDefault(p => p.PlayerId == playerId)
+            ?? throw new InvalidOperationException("Player is not in this room.");
+    }
+
+    private static void ResetReady(LobbyRoom room)
+    {
+        foreach (var player in room.Players)
+        {
+            player.IsReady = false;
+        }
+    }
+}
