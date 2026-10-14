@@ -14,4 +14,8 @@ public class LobbyRoom
     public List<LobbyPlayer> Players { get; set; } = new();
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public string? MatchId { get; set; }
+
+    public DateTime? StartedAt { get; set; }
 }

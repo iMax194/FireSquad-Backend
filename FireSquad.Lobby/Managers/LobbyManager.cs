@@ -20,6 +20,8 @@ public class LobbyManager
             MaxPlayers = room.MaxPlayers,
             State = room.State,
             CreatedAt = room.CreatedAt,
+            MatchId = room.MatchId,
+            StartedAt = room.StartedAt,
             Players = room.Players.Select(p => new LobbyPlayer
             {
                 PlayerId = p.PlayerId,
@@ -169,6 +171,58 @@ public class LobbyManager
                 && room.Players.Count == room.MaxPlayers
                 && room.Players.All(p => p.Role.HasValue && p.IsReady)
                 && room.Players.Select(p => p.Role).Distinct().Count() == room.MaxPlayers;
+        }
+    }
+
+    public LobbyRoom StarGame(string roomCode, string playerId)
+    {
+        lock (_lock)
+        {
+            if (!_rooms.TryGetValue(roomCode, out var room))
+            {
+                throw new InvalidOperationException("Room not found.");
+            }
+
+            if (room.State != LobbyRoomState.Waiting)
+            {
+                throw new InvalidOperationException("Room is not in Waiting state.");
+            }
+
+            if (room.HostPlayerId != playerId)
+            {
+                throw new InvalidOperationException("Only the host can start the game.");
+            }
+
+            if (room.Players.Count != room.MaxPlayers)
+            {
+                throw new InvalidOperationException("Four players are required.");
+            }
+
+            if (room.Players.Any(p => !p.Role.HasValue))
+            {
+                throw new InvalidOperationException("All players must select a role.");
+            }
+
+            if (room.Players.Any(p => !p.IsReady))
+            {
+                throw new InvalidOperationException("All players must be ready.");
+            }
+
+            int uniqueRole = room.Players.Select(p => p.Role).Distinct().Count();
+
+            if (uniqueRole != room.MaxPlayers)
+            {
+                throw new InvalidOperationException("Players must have unique roles.");
+            }
+
+            // Match Id for server integration
+            room.MatchId = Guid.NewGuid().ToString("N");
+
+            room.StartedAt = DateTime.UtcNow;
+
+            room.State = LobbyRoomState.Starting;
+
+            return Snapshot(room);
         }
     }
 

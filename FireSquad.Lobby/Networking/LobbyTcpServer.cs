@@ -317,10 +317,30 @@ public class LobbyTcpServer
                 break;
             }
 
+            case "START_GAME":
+            {
+                if (session.RoomCode == null)
+                {
+                    throw new InvalidOperationException("Not in a room.");
+                }
+
+                var room = _manager.StarGame(session.RoomCode, session.SessionId);
+
+                Console.WriteLine($"[Lobby] Starting match {room.MatchId} for room {room.RoomCode}");
+
+                await BroadcastRoomAsync(room, ct);
+
+                await BroadcastGameStartingAsync(room, request.RequestId, ct);
+                
+                break;
+            }
+
             case "LEAVE_ROOM":
             {
                 if (session.RoomCode == null)
+                {
                     throw new InvalidOperationException("Not in a room.");
+                }
 
                 string code = session.RoomCode;
 
@@ -385,6 +405,8 @@ public class LobbyTcpServer
                 state = room.State,
                 maxPlayers = room.MaxPlayers,
                 canStart = canStart,
+                matchId = room.MatchId,
+                startedAt = room.StartedAt,
                 players = room.Players.Select(p => new
                 {
                     playerId = p.PlayerId,
@@ -426,5 +448,56 @@ public class LobbyTcpServer
         CancellationToken ct)
     {
         return connection.SendAsync(LobbyResponse.Create("ERROR", new { message }, requestId), ct);
+    }
+
+    private async Task BroadcastGameStartingAsync(LobbyRoom room, string? requestId, CancellationToken ct)
+    {
+        var response = LobbyResponse.Create(
+            "GAME_STARTING",
+            new
+            {
+                roomCode = room.RoomCode,
+                matchId = room.MatchId,
+                levelId = 1,
+                state = room.State.ToString(),
+                startedAt = room.StartedAt,
+
+                players = room.Players.Select(p => new
+                {
+                    playerId = p.PlayerId,
+                    username = p.Username,
+                    role = p.Role?.ToString(),
+                    isHost = p.IsHost
+                }).ToArray()
+            },
+            requestId
+        );
+
+        foreach (var player in room.Players)
+        {
+            if (!_connections.TryGetValue(
+                player.PlayerId, out var connection))
+            {
+                Console.WriteLine($"[Lobby] Missing connection: {player.PlayerId}");
+                continue;
+            }
+
+            try
+            {
+                await connection.SendAsync(response, ct);
+            }
+            catch (IOException)
+            {
+                Console.WriteLine($"[Lobby] Failed to notify: {player.PlayerId}");
+            }
+            catch (ObjectDisposedException)
+            {
+                Console.WriteLine($"[Lobby] Connection closed: {player.PlayerId}");
+            }
+            catch (OperationCanceledException)
+            {
+                if (ct.IsCancellationRequested) throw;
+            }
+        }
     }
 }
