@@ -18,4 +18,6 @@ public class LobbyRoom
     public string? MatchId { get; set; }
 
     public DateTime? StartedAt { get; set; }
+
+    public long RoomVersion { get; set; } = 0;
 }

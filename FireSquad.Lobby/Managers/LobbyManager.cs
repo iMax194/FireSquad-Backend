@@ -22,6 +22,7 @@ public class LobbyManager
             CreatedAt = room.CreatedAt,
             MatchId = room.MatchId,
             StartedAt = room.StartedAt,
+            RoomVersion = room.RoomVersion,
             Players = room.Players.Select(p => new LobbyPlayer
             {
                 PlayerId = p.PlayerId,
@@ -78,6 +79,8 @@ public class LobbyManager
 
             _rooms.Add(code, room);
 
+            room.RoomVersion++;
+
             return Snapshot(room);
         }
     }
@@ -114,6 +117,8 @@ public class LobbyManager
 
             ResetReady(room);
 
+            room.RoomVersion++;
+
             return Snapshot(room);
         }
     }
@@ -137,6 +142,7 @@ public class LobbyManager
 
             player.Role = role;
             player.IsReady = false;
+            room.RoomVersion++;
 
             return Snapshot(room);
         }
@@ -155,6 +161,7 @@ public class LobbyManager
             }
 
             player.IsReady = true;
+            room.RoomVersion++;
 
             return Snapshot(room);
         }
@@ -221,49 +228,96 @@ public class LobbyManager
             room.StartedAt = DateTime.UtcNow;
 
             room.State = LobbyRoomState.Starting;
+            room.RoomVersion++;
 
             return Snapshot(room);
         }
     }
 
-    public LobbyRoom? LeaveRoom(string code, string playerId)
+    
+    public RoomLeaveResult LeaveRoomAtomic(
+        string code,
+        string playerId)
     {
         lock (_lock)
         {
-            if (!_rooms.TryGetValue(code, out var room)) return null;
-
-            if (room.State != LobbyRoomState.Waiting)
+            if (!_rooms.TryGetValue(code, out var room))
             {
-                throw new InvalidOperationException("Cannot leave using lobby rules after the game has started.");
+                return new RoomLeaveResult(null, false, false, null);
             }
 
             var player = room.Players.FirstOrDefault(p => p.PlayerId == playerId);
 
             if (player == null)
             {
-                return Snapshot(room);
+                return new RoomLeaveResult(Snapshot(room), false, false, null);
+            }
+
+            if (room.State == LobbyRoomState.InGame)
+            {
+                throw new InvalidOperationException("InGame disconnect belongs to Game Server.");
+            }
+
+            bool cancelled = room.State == LobbyRoomState.Starting;
+
+            string? cancelledMatchId = cancelled ? room.MatchId : null;
+
+            if (cancelled)
+            {
+                room.State = LobbyRoomState.Waiting;
+                room.MatchId = null;
+                room.StartedAt = null;
             }
 
             room.Players.Remove(player);
 
             if (room.Players.Count == 0)
             {
+                room.State = LobbyRoomState.Closed;
                 _rooms.Remove(code);
-                return null;
+
+                return new RoomLeaveResult(null, true, cancelled, cancelledMatchId);
             }
 
             if (room.HostPlayerId == playerId)
             {
-                var newHost = room.Players[0];
-                room.HostPlayerId = newHost.PlayerId;
-
-                foreach (var p in room.Players)
-                {
-                    p.IsHost = playerId == newHost.PlayerId;
-                }
+                room.HostPlayerId = room.Players[0].PlayerId;
             }
 
-            ResetReady(room);
+            foreach (var p in room.Players)
+            {
+                p.IsHost = p.PlayerId == room.HostPlayerId;
+
+                p.IsReady = false;
+            }
+
+            room.RoomVersion++;
+
+            return new RoomLeaveResult(Snapshot(room), true, cancelled, cancelledMatchId);
+        }
+    }
+
+
+    public LobbyRoom? RollBackStarting(string roomCode, string expectedMatchId)
+    {
+        lock (_lock)
+        {
+            if (!_rooms.TryGetValue(roomCode, out var room))
+            {
+                return null;
+            }
+
+            if (room.State != LobbyRoomState.Starting || room.MatchId != expectedMatchId)
+            {
+                return null;
+            }
+
+            Console.WriteLine($"[Lobby] Rolling back match {expectedMatchId}");
+
+            room.State = LobbyRoomState.Waiting;
+            room.MatchId = null;
+            room.StartedAt = null;
+            room.RoomVersion++;
 
             return Snapshot(room);
         }

@@ -6,6 +6,7 @@ using System.Text.Json;
 using FireSquad.Lobby.Manager;
 using FireSquad.Lobby.Messages;
 using FireSquad.Lobby.Models;
+using FireSquad.Lobby.Security;
 
 namespace FireSquad.Lobby.Networking;
 
@@ -13,14 +14,17 @@ public class LobbyTcpServer
 {
     private readonly TcpListener _listener;
     private readonly LobbyManager _manager = new();
+    private readonly JwtValidator _jwtValidator;
 
     private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public LobbyTcpServer(int port = 7777)
+    public LobbyTcpServer(int port, JwtValidator jwtValidator)
     {
         _listener = new TcpListener(IPAddress.Loopback, port);
+
+        _jwtValidator = jwtValidator;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -151,15 +155,49 @@ public class LobbyTcpServer
         {
             _connections.TryRemove(session.SessionId, out _);
 
-            string? code = session.RoomCode;
+            string? roomCode = session.RoomCode;
 
-            if (!string.IsNullOrEmpty(code))
+            if (!string.IsNullOrWhiteSpace(roomCode))
             {
                 try
                 {
-                    var room = _manager.LeaveRoom(code, session.SessionId);
+                    var leaveResult = _manager.LeaveRoomAtomic(roomCode, session.SessionId);
 
-                    await BroadcastRoomAsync(room, CancellationToken.None);
+                    bool wasStarting = leaveResult.StartingCancelled;
+
+                    var updatedRoom =leaveResult.Room;
+
+                    string? cancelledMatchId = leaveResult.CancelledMatchId;
+
+                    session.RoomCode = null;
+
+                    if (wasStarting && updatedRoom?.State == LobbyRoomState.Waiting)
+                    {
+                        var response = LobbyResponse.Create("START_FAILED", new
+                        {
+                            roomCode,
+                            reason = "A player disconnected during Starting."
+                        });
+
+                        foreach (var player in updatedRoom.Players)
+                        {
+                            if (_connections.TryGetValue(
+                                player.PlayerId,
+                                out var otherConnection))
+                            {
+                                try
+                                {
+                                    await otherConnection.SendAsync(
+                                        response,
+                                        CancellationToken.None);
+                                }
+                                catch (IOException) { }
+                                catch (ObjectDisposedException) { }
+                            }
+                        }
+                    }
+
+                    await BroadcastRoomAsync(updatedRoom, CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
@@ -177,17 +215,67 @@ public class LobbyTcpServer
     {
         var session = connection.Session;
         var type = request.Type?.ToUpperInvariant();
+        if (type != "AUTHENTICATE" && string.IsNullOrWhiteSpace(session.UserId))
+        {
+            await SendErrorAsync(connection, "Authentication required.", request.RequestId, ct);
+
+            return;
+        }
 
         switch (type)
         {
+            
+            case "AUTHENTICATE":
+            {
+                if (session.UserId != null)
+                {
+                    throw new InvalidOperationException("Session is already authenticated.");
+                }
+
+                var payload = ReadPayload<AuthenticatePayload>(request);
+
+                if (string.IsNullOrWhiteSpace(payload.Token) || payload.Token.Length > 8192)
+                {
+                    throw new InvalidOperationException("Invalid token.");
+                }
+
+                var identity = _jwtValidator.Validate(payload.Token);
+
+                if (identity == null)
+                {
+                    await SendErrorAsync(
+                        connection,
+                        "Invalid or expired token.",
+                        request.RequestId,
+                        ct);
+
+                    break;
+                }
+
+                session.UserId = identity.Value.UserId;
+                session.Username = identity.Value.Username;
+
+                await connection.SendAsync(
+                    LobbyResponse.Create(
+                        "AUTH_SUCCESS",
+                        new
+                        {
+                            userId = session.UserId,
+                            username = session.Username,
+                            playerId = session.SessionId
+                        }, request.RequestId), ct);
+
+                Console.WriteLine($"[Lobby] Authenticated session: {session.SessionId}");
+
+                break;
+            }
+
             case "CREATE_ROOM":
             {
                 if (session.RoomCode != null)
                     throw new InvalidOperationException("Already in a room.");
 
-                var payload = ReadPayload<CreateRoomPayload>(request);
-
-                string username = ValidateUsername(payload.Username);
+                string username = session.Username ?? throw new InvalidOperationException("Authentication required.");
 
                 var room = _manager.CreateRoom(session.SessionId, username);
 
@@ -210,14 +298,18 @@ public class LobbyTcpServer
 
             case "JOIN_ROOM":
             {
-                if (session.RoomCode != null)
-                    throw new InvalidOperationException("Already in a room.");
+                if (session.RoomCode != null) throw new InvalidOperationException("Already in a room.");
 
                 var payload = ReadPayload<JoinRoomPayload>(request);
 
-                string username = ValidateUsername(payload.Username);
+                string username = session.Username ?? throw new InvalidOperationException("Authentication required.");
 
-                string code = payload.RoomCode.Trim().ToUpperInvariant();
+                string code = payload.RoomCode?.Trim().ToUpperInvariant() ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(code))
+                {
+                    throw new InvalidOperationException("Room code is required.");
+                }
 
                 var room = _manager.JoinRoom(code, session.SessionId, username);
 
@@ -328,6 +420,8 @@ public class LobbyTcpServer
 
                 Console.WriteLine($"[Lobby] Starting match {room.MatchId} for room {room.RoomCode}");
 
+                _ = MonitorStartingTimeoutAsync(room.RoomCode, room.MatchId!, ct);
+
                 await BroadcastRoomAsync(room, ct);
 
                 await BroadcastGameStartingAsync(room, request.RequestId, ct);
@@ -344,7 +438,13 @@ public class LobbyTcpServer
 
                 string code = session.RoomCode;
 
-                var room = _manager.LeaveRoom(code, session.SessionId);
+                var leaveResult = _manager.LeaveRoomAtomic(code, session.SessionId);
+
+                var updatedRoom = leaveResult.Room;
+
+                bool wasStarting = leaveResult.StartingCancelled;
+
+                string? cancelledMatchId = leaveResult.CancelledMatchId;
 
                 session.RoomCode = null;
 
@@ -354,7 +454,33 @@ public class LobbyTcpServer
                         new { roomCode = code },
                         request.RequestId), ct);
 
-                await BroadcastRoomAsync(room, ct);
+                if (wasStarting && updatedRoom != null)
+                {
+                    var failure = LobbyResponse.Create(
+                        "START_FAILED",
+                        new
+                        {
+                            roomCode = code,
+                            reason =
+                                "A player left during Starting."
+                        });
+
+                    foreach (var player in updatedRoom.Players)
+                    {
+                        if (_connections.TryGetValue(
+                            player.PlayerId, out var other))
+                        {
+                            try
+                            {
+                                await other.SendAsync(failure, ct);
+                            }
+                            catch (IOException) { }
+                            catch (ObjectDisposedException) { }
+                        }
+                    }
+                }
+
+                await BroadcastRoomAsync(updatedRoom, ct);
                 break;
             }
 
@@ -407,6 +533,7 @@ public class LobbyTcpServer
                 canStart = canStart,
                 matchId = room.MatchId,
                 startedAt = room.StartedAt,
+                roomVersion = room.RoomVersion,
                 players = room.Players.Select(p => new
                 {
                     playerId = p.PlayerId,
@@ -448,6 +575,55 @@ public class LobbyTcpServer
         CancellationToken ct)
     {
         return connection.SendAsync(LobbyResponse.Create("ERROR", new { message }, requestId), ct);
+    }
+
+    private async Task MonitorStartingTimeoutAsync(string roomCode, string matchId, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(20), ct);
+
+            var room = _manager.RollBackStarting(roomCode, matchId);
+
+            if (room == null)
+            {
+                return;
+            }
+
+            Console.WriteLine($"[Lobby] Match {matchId} timed out.");
+
+            var message = LobbyResponse.Create("START_FAILED", new
+            {
+                roomCode,
+                matchId,
+                reason = "Game Server preparation timed out."
+            });
+
+            foreach (var player in room.Players)
+            {
+                if (!_connections.TryGetValue(player.PlayerId, out var connection))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await connection.SendAsync(message, ct);
+                }
+                catch (IOException) { }
+                catch (ObjectDisposedException) { }
+            }
+
+            await BroadcastRoomAsync(room, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // Server shutting down.
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Lobby] Timeout monitor error: {ex.Message}");
+        }
     }
 
     private async Task BroadcastGameStartingAsync(LobbyRoom room, string? requestId, CancellationToken ct)

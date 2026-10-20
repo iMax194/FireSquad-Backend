@@ -1,6 +1,7 @@
 ﻿using FireSquad.Lobby.Manager;
 using FireSquad.Lobby.Models;
 using FireSquad.Lobby.Networking;
+using FireSquad.Lobby.Security;
 
 Console.Title = "FireSquad Lobby Server";
 
@@ -18,7 +19,23 @@ Console.CancelKeyPress += (sender, e) =>
     cancellationTokenSource.Cancel();
 };
 
-var lobbyServer = new LobbyTcpServer(7777);
+
+var jwtKey = Environment.GetEnvironmentVariable(
+    "Jwt__Key");
+
+if (string.IsNullOrWhiteSpace(jwtKey))
+{
+    throw new InvalidOperationException(
+        "Jwt__Key environment variable is missing.");
+}
+
+var jwtValidator = new JwtValidator(
+    jwtKey,
+    issuer: "FireSquad.Api",
+    audience: "FireSquad.Unity");
+
+var lobbyServer = new LobbyTcpServer(7777, jwtValidator);
+
 
 Console.WriteLine("================================");
 Console.WriteLine("     FIRESQUAD LOBBY SERVER     ");

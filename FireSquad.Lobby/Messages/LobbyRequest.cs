@@ -14,14 +14,12 @@ public class LobbyRequest
 
 public class CreateRoomPayload
 {
-    public string Username { get; set; } = string.Empty;
+    
 }
 
 public class JoinRoomPayload
 {
     public string RoomCode { get; set; } = string.Empty;
-
-    public string Username { get; set; } = string.Empty;
 }
 
 public class LeaveRoomPayload
@@ -38,4 +36,11 @@ public class SelectRolePayload
 public class SetReadyPayload
 {
     public bool? Ready { get; set; }
+}
+
+
+public class AuthenticatePayload
+{
+    public string Token { get; set; } =
+        string.Empty;
 }

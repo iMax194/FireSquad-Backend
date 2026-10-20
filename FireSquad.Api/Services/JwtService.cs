@@ -37,7 +37,7 @@ public class JwtService
         };
 
         var key = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(_settings.Key));
+           Convert.FromBase64String(_settings.Key));
 
         var credentials = new SigningCredentials(
             key,
