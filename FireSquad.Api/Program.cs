@@ -90,7 +90,7 @@ builder.Services
 
                 IssuerSigningKey =
                     new SymmetricSecurityKey(
-                        Encoding.UTF8.GetBytes(jwtKey)),
+                        Convert.FromBase64String(jwtKey)),
 
                 NameClaimType = "unique_name",
                 ClockSkew = TimeSpan.Zero

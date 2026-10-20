@@ -2,6 +2,7 @@
 # .NET Build
 **/bin/
 **/obj/
+.jwt-key.local
 
 # Visual Studio / VS Code
 .vs/
