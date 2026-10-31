@@ -389,17 +389,19 @@ public class LobbyTcpServer
                     throw new InvalidOperationException("Ready field is required.");
                 }
 
+                bool ready = payload.Ready.Value;
+
                 var room = _manager.SetReady(
                     session.RoomCode,
                     session.SessionId,
-                    payload.Ready.Value);
+                    ready);
 
                 await connection.SendAsync(
                     LobbyResponse.Create(
                         "READY_UPDATED",
                         new
                         {
-                            isReady = payload.Ready
+                            isReady = ready
                         },
                         request.RequestId),
                     ct);

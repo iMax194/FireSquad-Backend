@@ -115,8 +115,6 @@ public class LobbyManager
                 Username = username
             });
 
-            ResetReady(room);
-
             room.RoomVersion++;
 
             return Snapshot(room);
@@ -160,7 +158,7 @@ public class LobbyManager
                 throw new InvalidOperationException("Please select a role first.");
             }
 
-            player.IsReady = true;
+            player.IsReady = ready;
             room.RoomVersion++;
 
             return Snapshot(room);
@@ -288,7 +286,10 @@ public class LobbyManager
             {
                 p.IsHost = p.PlayerId == room.HostPlayerId;
 
-                p.IsReady = false;
+                if (cancelled)
+                {
+                    p.IsReady = false;
+                }
             }
 
             room.RoomVersion++;
