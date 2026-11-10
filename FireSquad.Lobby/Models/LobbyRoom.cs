@@ -7,7 +7,7 @@ public class LobbyRoom
 
     public string HostPlayerId { get; set; } = string.Empty;
 
-    public int MaxPlayers { get; set; } = 4;
+    public int MaxPlayers { get; set; } = 3;
 
     public LobbyRoomState State { get; set; } = LobbyRoomState.Waiting;
 

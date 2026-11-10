@@ -57,16 +57,14 @@ static void TestLobbyManager()
 
     manager.JoinRoom(code, "player2", "Player02");
     manager.JoinRoom(code, "player3", "Player03");
-    manager.JoinRoom(code, "player4", "Player04");
 
     manager.SelectRole(code, "player1", PlayerRole.Scout);
     manager.SelectRole(code, "player2", PlayerRole.Foamer);
     manager.SelectRole(code, "player3", PlayerRole.Breaker);
-    manager.SelectRole(code, "player4", PlayerRole.Hoser);
 
     foreach (var id in new[]
     {
-        "player1", "player2", "player3", "player4"
+        "player1", "player2", "player3"
     })
     {
         manager.SetReady(code, id, true);
@@ -74,7 +72,7 @@ static void TestLobbyManager()
 
     var result = manager.GetRoom(code)!;
 
-    Console.WriteLine($"Players: {result.Players.Count}/4");
+    Console.WriteLine($"Players: {result.Players.Count}/3");
 
     foreach (var player in result.Players)
     {
