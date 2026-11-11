@@ -41,6 +41,26 @@ var apiBaseUrl = Environment.GetEnvironmentVariable("Api__BaseUrl")
 var internalApiKey = Environment.GetEnvironmentVariable(
     "InternalApi__ServiceKey");
 
+// Unity clients receive this reachable endpoint in GAME_STARTING.
+var gameServerHost = Environment.GetEnvironmentVariable("GameServer__Host")
+    ?? "127.0.0.1";
+
+var gameServerPort = 9050;
+var configuredGameServerPort = Environment.GetEnvironmentVariable("GameServer__Port");
+if (!string.IsNullOrWhiteSpace(configuredGameServerPort) &&
+    (!int.TryParse(configuredGameServerPort, out gameServerPort) ||
+     gameServerPort < 1 || gameServerPort > 65535))
+{
+    throw new InvalidOperationException(
+        "GameServer__Port must be a valid port number between 1 and 65535.");
+}
+
+if (string.IsNullOrWhiteSpace(gameServerHost))
+{
+    throw new InvalidOperationException(
+        "GameServer__Host must contain a reachable host or IP address.");
+}
+
 if (string.IsNullOrWhiteSpace(internalApiKey))
 {
     throw new InvalidOperationException(
@@ -49,7 +69,7 @@ if (string.IsNullOrWhiteSpace(internalApiKey))
 }
 
 using var matchApiClient = new MatchApiClient(apiBaseUrl, internalApiKey);
-var lobbyServer = new LobbyTcpServer(7777, jwtValidator, matchApiClient);
+var lobbyServer = new LobbyTcpServer(7777, jwtValidator, matchApiClient, gameServerHost, gameServerPort);
 
 
 Console.WriteLine("================================");
