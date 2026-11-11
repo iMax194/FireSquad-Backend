@@ -46,6 +46,8 @@ builder.Services.AddSwaggerGen(options =>
 builder.Services.AddSingleton<MongoDbContext>();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IMatchRepository, MatchRepository>();
+builder.Services.AddScoped<IMatchService, MatchService>();
 builder.Services.AddScoped<IPasswordHasher<User>,PasswordHasher<User>>();
 
 // JWT

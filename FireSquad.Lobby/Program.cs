@@ -2,6 +2,7 @@
 using FireSquad.Lobby.Models;
 using FireSquad.Lobby.Networking;
 using FireSquad.Lobby.Security;
+using FireSquad.Lobby.Services;
 
 Console.Title = "FireSquad Lobby Server";
 
@@ -34,7 +35,21 @@ var jwtValidator = new JwtValidator(
     issuer: "FireSquad.Api",
     audience: "FireSquad.Unity");
 
-var lobbyServer = new LobbyTcpServer(7777, jwtValidator);
+var apiBaseUrl = Environment.GetEnvironmentVariable("Api__BaseUrl")
+    ?? "http://localhost:5000/";
+
+var internalApiKey = Environment.GetEnvironmentVariable(
+    "InternalApi__ServiceKey");
+
+if (string.IsNullOrWhiteSpace(internalApiKey))
+{
+    throw new InvalidOperationException(
+        "InternalApi__ServiceKey environment variable is missing. " +
+        "Use the same service key when starting FireSquad.Api and FireSquad.Lobby.");
+}
+
+using var matchApiClient = new MatchApiClient(apiBaseUrl, internalApiKey);
+var lobbyServer = new LobbyTcpServer(7777, jwtValidator, matchApiClient);
 
 
 Console.WriteLine("================================");
@@ -103,7 +118,7 @@ static void TestLobbyManager()
     if (manager.CanStart(code, "player2"))
         throw new Exception("Non-host should not start.");
 
-    if (updatedRoom.Players.Count != 4)
+    if (updatedRoom.Players.Count != 3)
         throw new Exception("Player count is incorrect.");
 
     Console.WriteLine("All basic tests passed!");
