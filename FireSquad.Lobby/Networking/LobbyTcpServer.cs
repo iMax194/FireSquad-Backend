@@ -19,6 +19,8 @@ public class LobbyTcpServer
     private readonly LobbyManager _manager = new();
     private readonly JwtValidator _jwtValidator;
     private readonly MatchApiClient _matchApiClient;
+    private readonly string _gameServerHost;
+    private readonly int _gameServerPort;
 
     private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
 
@@ -27,11 +29,21 @@ public class LobbyTcpServer
     public LobbyTcpServer(
         int port,
         JwtValidator jwtValidator,
-        MatchApiClient matchApiClient)
+        MatchApiClient matchApiClient,
+        string gameServerHost = "127.0.0.1",
+        int gameServerPort = 9050)
     {
+        if (string.IsNullOrWhiteSpace(gameServerHost))
+            throw new ArgumentException("Game Server host is required.", nameof(gameServerHost));
+
+        if (gameServerPort < 1 || gameServerPort > 65535)
+            throw new ArgumentOutOfRangeException(nameof(gameServerPort));
+
         _listener = new TcpListener(IPAddress.Loopback, port);
         _jwtValidator = jwtValidator;
         _matchApiClient = matchApiClient;
+        _gameServerHost = gameServerHost.Trim();
+        _gameServerPort = gameServerPort;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -770,6 +782,14 @@ public class LobbyTcpServer
                 levelId = 1,
                 state = room.State.ToString(),
                 startedAt = room.StartedAt,
+
+                // Endpoint for the Unity LiteNetLib client.
+                gameServer = new
+                {
+                    host = _gameServerHost,
+                    port = _gameServerPort,
+                    transport = "UDP"
+                },
 
                 players = room.Players.Select(p => new
                 {

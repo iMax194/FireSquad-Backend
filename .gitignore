@@ -3,6 +3,7 @@
 **/bin/
 **/obj/
 .jwt-key.local
+.service-key.local
 
 # Visual Studio / VS Code
 .vs/
