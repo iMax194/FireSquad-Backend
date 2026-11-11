@@ -7,6 +7,9 @@ using FireSquad.Lobby.Manager;
 using FireSquad.Lobby.Messages;
 using FireSquad.Lobby.Models;
 using FireSquad.Lobby.Security;
+using FireSquad.Lobby.Services;
+using FireSquad.Shared.DTOs.Matches;
+using FireSquad.Shared.Enums;
 
 namespace FireSquad.Lobby.Networking;
 
@@ -15,16 +18,20 @@ public class LobbyTcpServer
     private readonly TcpListener _listener;
     private readonly LobbyManager _manager = new();
     private readonly JwtValidator _jwtValidator;
+    private readonly MatchApiClient _matchApiClient;
 
     private readonly ConcurrentDictionary<string, ClientConnection> _connections = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public LobbyTcpServer(int port, JwtValidator jwtValidator)
+    public LobbyTcpServer(
+        int port,
+        JwtValidator jwtValidator,
+        MatchApiClient matchApiClient)
     {
         _listener = new TcpListener(IPAddress.Loopback, port);
-
         _jwtValidator = jwtValidator;
+        _matchApiClient = matchApiClient;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -171,6 +178,15 @@ public class LobbyTcpServer
 
                     session.RoomCode = null;
 
+                    if (wasStarting && !string.IsNullOrWhiteSpace(cancelledMatchId))
+                    {
+                        await TryUpdateMatchStatusAsync(
+                            cancelledMatchId,
+                            MatchStatus.Aborted,
+                            "A player disconnected during Starting.",
+                            CancellationToken.None);
+                    }
+
                     if (wasStarting && updatedRoom?.State == LobbyRoomState.Waiting)
                     {
                         var response = LobbyResponse.Create("START_FAILED", new
@@ -277,7 +293,7 @@ public class LobbyTcpServer
 
                 string username = session.Username ?? throw new InvalidOperationException("Authentication required.");
 
-                var room = _manager.CreateRoom(session.SessionId, username);
+                var room = _manager.CreateRoom(session.SessionId, username, session.UserId);
 
                 session.Username = username;
                 session.RoomCode = room.RoomCode;
@@ -311,7 +327,7 @@ public class LobbyTcpServer
                     throw new InvalidOperationException("Room code is required.");
                 }
 
-                var room = _manager.JoinRoom(code, session.SessionId, username);
+                var room = _manager.JoinRoom(code, session.SessionId, username, session.UserId);
 
                 session.Username = username;
                 session.RoomCode = room.RoomCode;
@@ -414,20 +430,79 @@ public class LobbyTcpServer
             case "START_GAME":
             {
                 if (session.RoomCode == null)
-                {
                     throw new InvalidOperationException("Not in a room.");
-                }
 
                 var room = _manager.StarGame(session.RoomCode, session.SessionId);
+                var matchId = room.MatchId!;
+                var host = room.Players.First(p => p.IsHost);
 
-                Console.WriteLine($"[Lobby] Starting match {room.MatchId} for room {room.RoomCode}");
+                var createRequest = new CreateMatchRequest
+                {
+                    MatchId = matchId,
+                    RoomCode = room.RoomCode,
+                    HostUserId = host.UserId,
+                    StartingAt = room.StartedAt ?? DateTime.UtcNow,
+                    Players = room.Players.Select(p => new MatchPlayerDto
+                    {
+                        PlayerId = p.PlayerId,
+                        UserId = p.UserId,
+                        Username = p.Username,
+                        Role = p.Role?.ToString() ?? string.Empty,
+                        IsHost = p.IsHost
+                    }).ToList()
+                };
 
-                _ = MonitorStartingTimeoutAsync(room.RoomCode, room.MatchId!, ct);
+                try
+                {
+                    // Persist the match before notifying Unity clients that it is starting.
+                    await _matchApiClient.CreateMatchAsync(createRequest, ct);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    Console.WriteLine($"[Lobby] Could not persist match {matchId}: {ex.Message}");
+                    var rolledBack = _manager.RollBackStarting(room.RoomCode, matchId);
 
+                    // If the API saved the document but its response was lost, mark it Aborted.
+                    await TryUpdateMatchStatusAsync(
+                        matchId, MatchStatus.Aborted,
+                        "Lobby could not confirm match persistence.", ct);
+
+                    if (rolledBack != null)
+                    {
+                        await BroadcastStartFailedAsync(
+                            rolledBack, matchId,
+                            "Could not save match data. Please try again.",
+                            request.RequestId, ct);
+                        await BroadcastRoomAsync(rolledBack, ct);
+                    }
+                    else
+                    {
+                        await SendErrorAsync(
+                            connection, "Could not save match data. Please try again.",
+                            request.RequestId, ct);
+                    }
+
+                    break;
+                }
+
+                // A player may have left while the HTTP request was in flight.
+                var currentRoom = _manager.GetRoom(room.RoomCode);
+                if (currentRoom == null ||
+                    currentRoom.State != LobbyRoomState.Starting ||
+                    currentRoom.MatchId != matchId)
+                {
+                    await TryUpdateMatchStatusAsync(
+                        matchId, MatchStatus.Aborted,
+                        "Room was cancelled while the match was being persisted.", ct);
+                    break;
+                }
+
+                room = currentRoom;
+                Console.WriteLine($"[Lobby] Match {matchId} saved in API/MongoDB for room {room.RoomCode}");
+
+                _ = MonitorStartingTimeoutAsync(room.RoomCode, matchId, ct);
                 await BroadcastRoomAsync(room, ct);
-
                 await BroadcastGameStartingAsync(room, request.RequestId, ct);
-                
                 break;
             }
 
@@ -449,6 +524,13 @@ public class LobbyTcpServer
                 string? cancelledMatchId = leaveResult.CancelledMatchId;
 
                 session.RoomCode = null;
+
+                if (wasStarting && !string.IsNullOrWhiteSpace(cancelledMatchId))
+                {
+                    await TryUpdateMatchStatusAsync(
+                        cancelledMatchId, MatchStatus.Aborted,
+                        "A player left during Starting.", ct);
+                }
 
                 await connection.SendAsync(
                     LobbyResponse.Create(
@@ -594,6 +676,10 @@ public class LobbyTcpServer
 
             Console.WriteLine($"[Lobby] Match {matchId} timed out.");
 
+            await TryUpdateMatchStatusAsync(
+                matchId, MatchStatus.Failed,
+                "Game Server preparation timed out.", ct);
+
             var message = LobbyResponse.Create("START_FAILED", new
             {
                 roomCode,
@@ -625,6 +711,51 @@ public class LobbyTcpServer
         catch (Exception ex)
         {
             Console.WriteLine($"[Lobby] Timeout monitor error: {ex.Message}");
+        }
+    }
+
+    private async Task TryUpdateMatchStatusAsync(
+        string matchId,
+        MatchStatus status,
+        string reason,
+        CancellationToken ct)
+    {
+        try
+        {
+            await _matchApiClient.UpdateStatusAsync(
+                matchId, status, reason, ct);
+            Console.WriteLine($"[Lobby] Match {matchId} status updated to {status}.");
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Console.WriteLine(
+                $"[Lobby] Could not update Match {matchId} to {status}: {ex.Message}");
+        }
+    }
+
+    private async Task BroadcastStartFailedAsync(
+        LobbyRoom room,
+        string matchId,
+        string reason,
+        string? requestId,
+        CancellationToken ct)
+    {
+        var response = LobbyResponse.Create(
+            "START_FAILED",
+            new { roomCode = room.RoomCode, matchId, reason },
+            requestId);
+
+        foreach (var player in room.Players)
+        {
+            if (!_connections.TryGetValue(player.PlayerId, out var playerConnection))
+                continue;
+
+            try
+            {
+                await playerConnection.SendAsync(response, ct);
+            }
+            catch (IOException) { }
+            catch (ObjectDisposedException) { }
         }
     }
 

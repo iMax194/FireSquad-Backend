@@ -4,6 +4,8 @@ public class LobbyPlayer
 {
     public string PlayerId { get; set; } = string.Empty;
 
+    public string UserId { get; set; } = string.Empty;
+
     public string Username { get; set; } = string.Empty;
 
     public PlayerRole? Role { get; set; }

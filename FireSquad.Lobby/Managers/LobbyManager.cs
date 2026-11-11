@@ -26,6 +26,7 @@ public class LobbyManager
             Players = room.Players.Select(p => new LobbyPlayer
             {
                 PlayerId = p.PlayerId,
+                    UserId = p.UserId,
                     Username = p.Username,
                     Role = p.Role,
                     IsReady = p.IsReady,
@@ -48,7 +49,7 @@ public class LobbyManager
         );
     }
 
-    public LobbyRoom CreateRoom(string playerId, string username)
+    public LobbyRoom CreateRoom(string playerId, string username, string? userId = null)
     {
         lock (_lock)
         {
@@ -73,6 +74,7 @@ public class LobbyManager
             room.Players.Add(new LobbyPlayer
             {
                 PlayerId = playerId,
+                UserId = userId ?? string.Empty,
                 Username = username,
                 IsHost = true
             });
@@ -85,7 +87,7 @@ public class LobbyManager
         }
     }
 
-    public LobbyRoom JoinRoom(string code, string playerId, string username)
+    public LobbyRoom JoinRoom(string code, string playerId, string username, string? userId = null)
     {
         lock (_lock)
         {
@@ -104,7 +106,7 @@ public class LobbyManager
                 throw new InvalidOperationException("Room is not accepting players.");
             }
 
-            if (room.Players.Count > room.MaxPlayers)
+            if (room.Players.Count >= room.MaxPlayers)
             {
                 throw new InvalidOperationException("Room is full.");
             }
@@ -112,6 +114,7 @@ public class LobbyManager
             room.Players.Add(new LobbyPlayer
             {
                 PlayerId = playerId,
+                UserId = userId ?? string.Empty,
                 Username = username
             });
 
@@ -200,7 +203,7 @@ public class LobbyManager
 
             if (room.Players.Count != room.MaxPlayers)
             {
-                throw new InvalidOperationException("Four players are required.");
+                throw new InvalidOperationException($"Exactly {room.MaxPlayers} players are required.");
             }
 
             if (room.Players.Any(p => !p.Role.HasValue))
